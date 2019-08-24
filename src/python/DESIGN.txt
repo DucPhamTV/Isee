@@ -1,0 +1,15 @@
+RTSP client for Yoosee camera
+           TCP flow
+client ------------------> yoosee:554
+            port1
+       <-----------------
+
+client          UDP flow
+open       <-------------- yoosee:streaming_port
+UDP port1
+
+### Digest authentication
+
+### Google drive API
+
+
