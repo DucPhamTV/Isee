@@ -1,11 +1,18 @@
 import socket
+import argparse
 
 
-SERVER_IP = "192.168.1.13"
-SERVER_PORT = 554
-PATH = "onvif1"
 RTSP_FIRST_LINE = "{command} rtsp://{host}:{port}/{path} RTSP/1.0\r\n"
 RTSP_HEADER = "{}: {}\r\n"
+
+
+def parse_input():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("server_ip", help="RTSP server ip address")
+    parser.add_argument("--control_port", default=554, type=int,
+                        help="RTSP control port, default value 554")
+    parser.add_argument("--path", default="onvif1", help="path to media file")
+    return parser.parse_args()
 
 
 class RTSPClient(object):
@@ -52,7 +59,8 @@ class RTSPClient(object):
 
 
 if __name__ == "__main__":
-    client = RTSPClient(SERVER_IP, SERVER_PORT, PATH)
+    args = parse_input()
+    client = RTSPClient(args.server_ip, args.control_port, args.path)
     client.connect()
     response = client.option_request()
     print(response)
