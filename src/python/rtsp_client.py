@@ -3,12 +3,17 @@ import argparse
 from collections import namedtuple
 import hashlib
 import os
+import threading
 
 
 RTSP_FIRST_LINE = "{command} rtsp://{host}:{port}/{path} RTSP/1.0\r\n"
 RTSP_HEADER = "{}: {}\r\n"
 
 Response = namedtuple("Response", ["code", "message", "headers"])
+
+
+class AuthenticationError(Exception):
+    pass
 
 
 def parse_input():
@@ -28,6 +33,7 @@ class RTSPClient(object):
         self.control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.streaming_sock = None
         self.cseq = 1
+        self.session = None
 
     def connect(self):
         self.control_sock.connect((self.server_ip, self.server_port))
@@ -49,18 +55,25 @@ class RTSPClient(object):
         print("Received %s" % response)
         return response
 
-    def _generate_first_line(self, command):
+    def _generate_first_line(self, command, path=None):
         return RTSP_FIRST_LINE.format(
            command=command,
            host=self.server_ip,
            port=self.server_port,
-           path=self.path,
+           path=path or self.path,
         )
+
+    def initialize_streaming_socket(self):
+        self.streaming_sock = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.streaming_sock.bind(('', 0))
 
     def option_request(self):
         msg = self._generate_first_line("OPTIONS")
         msg += RTSP_HEADER.format("CSeq", self.cseq)
         msg += RTSP_HEADER.format("User-Agent", "Isee v1.0")
+        if self.session:
+            msg += RTSP_HEADER.format('Session', self.session)
         msg += '\r\n'
         response = self._send(bytearray(msg, 'utf-8'))
         return self._parse_response(response)
@@ -72,6 +85,54 @@ class RTSPClient(object):
             msg += RTSP_HEADER.format("Authorization", authen)
         msg += RTSP_HEADER.format("User-Agent", "Isee v1.0")
         msg += RTSP_HEADER.format("Accept", "application/sdp")
+        if self.session:
+            msg += RTSP_HEADER.format('Session', self.session)
+        msg += '\r\n'
+        response = self._send(bytearray(msg, 'utf-8'))
+        return self._parse_response(response)
+
+    def setup_request(self, authen=None, track="track1"):
+        self.initialize_streaming_socket()
+        streaming_port = self.streaming_sock.getsockname()[1]
+        print("Streaming port: %d" % streaming_port)
+        msg = self._generate_first_line("SETUP", '/'.join([self.path, track]))
+        msg += RTSP_HEADER.format("CSeq", self.cseq)
+        if authen:
+            msg += RTSP_HEADER.format("Authorization", authen)
+        msg += RTSP_HEADER.format("User-Agent", "Isee v1.0")
+        msg += RTSP_HEADER.format(
+            "Transport", "RTP/AVP;unicast;client_port={}-{}".format(
+                streaming_port, streaming_port + 1)
+        )
+        msg += '\r\n'
+        response = self._send(bytearray(msg, 'utf-8'))
+        result = self._parse_response(response)
+        assert result.code == 200
+        self.session = result.headers['Session'].split(';')[0]
+        return result
+
+    def play_request(self, authen=None):
+        msg = self._generate_first_line("PLAY")
+        msg += RTSP_HEADER.format("CSeq", self.cseq)
+        if authen:
+            msg += RTSP_HEADER.format("Authorization", authen)
+        msg += RTSP_HEADER.format("User-Agent", "Isee v1.0")
+        assert self.session is not None
+        msg += RTSP_HEADER.format("Session", self.session)
+        msg += RTSP_HEADER.format("Range", "npt=0.000-")
+        msg += '\r\n'
+        response = self._send(bytearray(msg, 'utf-8'))
+        result = self._parse_response(response)
+        return result
+
+    def teardown_request(self, authen=None):
+        msg = self._generate_first_line("TEARDOWN")
+        msg += RTSP_HEADER.format("CSeq", self.cseq)
+        if authen:
+            msg += RTSP_HEADER.format("Authorization", authen)
+        msg += RTSP_HEADER.format("User-Agent", "Isee v1.0")
+        assert self.session is not None
+        msg += RTSP_HEADER.format("Session", self.session)
         msg += '\r\n'
         response = self._send(bytearray(msg, 'utf-8'))
         return self._parse_response(response)
@@ -103,16 +164,46 @@ class RTSPClient(object):
             username, password, realm, method, uri, nonce)
 
 
+def capture(sock):
+    counter = 500
+    with open('dump_data.txt', 'wb') as output:
+        while True:
+            data, _ = sock.recvfrom(4096)
+            output.write(data)
+            print(".")
+            counter -= 1
+            if counter == 0:
+                break
+
+
 if __name__ == "__main__":
     args = parse_input()
     client = RTSPClient(args.server_ip, args.control_port, args.path)
     client.connect()
     response = client.option_request()
-    response = client.describe_request()
-    if response.code == 401:
+    assert response.code == 200
+    describe_response = client.describe_request()
+    authen_str = None
+    if describe_response.code == 401:
         print("Server requires authentication")
         password = os.environ['MYPW']
         authen_str = client.authenticate(
-            response, "admin", password, "DESCRIBE")
+            describe_response, "admin", password, "DESCRIBE")
         print("Generate authentication : %s" % authen_str)
         response = client.describe_request(authen_str)
+        if response.code != 200:
+            raise AuthenticationError("Incorrect username or password!")
+    authen_str = client.authenticate(
+        describe_response, "admin", password, "SETUP")
+    response = client.setup_request(authen_str, 'track1')
+    assert response.code == 200
+    x = threading.Thread(target=capture, args=(client.streaming_sock,))
+    x.start()
+    authen_str = client.authenticate(
+        describe_response, "admin", password, "PLAY")
+    response = client.play_request(authen_str)
+    print("Playing ......")
+    x.join()
+    authen_str = client.authenticate(
+        describe_response, "admin", password, "TEARDOWN")
+    response = client.teardown_request(authen_str)
