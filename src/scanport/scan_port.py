@@ -1,5 +1,4 @@
 import argparse
-import requests as rq
 import socket
 
 
@@ -16,7 +15,6 @@ if __name__ == '__main__':
 
     for i in range(int(args.startport), int(args.endport)):
         try:
-#            response = rq.get("http://{0}:{1}".format(args.ip, i), timeout=2)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((args.ip, i))
             sock.close()

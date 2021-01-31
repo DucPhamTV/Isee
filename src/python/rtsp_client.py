@@ -197,7 +197,7 @@ if __name__ == "__main__":
         describe_response, "admin", password, "SETUP")
     response = client.setup_request(authen_str, 'track1')
     assert response.code == 200
-    x = threading.Thread(target=capture, args=(client.streaming_sock,))
+    x = threading.Thread(target=capture, args=(client.streaming_sock,), daemon=True)
     x.start()
     authen_str = client.authenticate(
         describe_response, "admin", password, "PLAY")
